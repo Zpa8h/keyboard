@@ -13,6 +13,8 @@ global g_msgWin           := Gui(, "KensingtonMacropad_Internal")
 SetupRawInput()
 FindKensington()
 InstallHook()
+UpdateTrayTip()
+DebugDumpDevices()  ; one-time startup dump — shows all keyboard paths in a MsgBox
 
 ; ─── Raw Input registration ────────────────────────────────────────────────────
 ; Registers for keyboard WM_INPUT messages delivered to g_msgWin even when
@@ -182,6 +184,11 @@ HandleRawInput(wParam, lParam, *) {
     if (flags & 1) || !IsNumpadVK(vKey)
         return
 
+    ; Debug: show which device sent the key and whether it matched
+    match := (devHandle = g_kensingtonHandle) ? "KENSINGTON" : "other kbd"
+    ToolTip "WM_INPUT VK=" vKey " | dev=" devHandle " | " match
+    SetTimer(() => ToolTip(), -2000)
+
     if devHandle = g_kensingtonHandle {
         ; Key came from the Kensington → run test macro
         RunMacro(vKey)
@@ -198,6 +205,7 @@ HandleDeviceChange(wParam, lParam, *) {
     if wParam = 0x8000 || wParam = 0x8004 {
         Sleep(500)  ; let Windows finish registering/unregistering the device
         FindKensington()
+        UpdateTrayTip()
     }
 }
 
@@ -264,6 +272,58 @@ RunMacro(vk) {
         case 110: Send "G"   ; .
         case 8:   Send "H"   ; Backspace
     }
+}
+
+; ─── Debug helpers (remove once working) ──────────────────────────────────────
+
+; Shows ARMED / DISARMED in the tray icon tooltip.
+UpdateTrayTip() {
+    global g_kensingtonHandle
+    if g_kensingtonHandle
+        A_IconTip := "Kensington Macropad — ARMED (handle=" g_kensingtonHandle ")"
+    else
+        A_IconTip := "Kensington Macropad — disarmed (device not found)"
+}
+
+; Dumps every keyboard's HID path at startup so we can verify the VID/PID string.
+; Shows a scrollable MsgBox — close it to continue; the script keeps running.
+DebugDumpDevices() {
+    entrySize := 8 + A_PtrSize
+    DllCall("GetRawInputDeviceList", "Ptr", 0, "UInt*", &count := 0, "UInt", entrySize)
+    if !count {
+        MsgBox "GetRawInputDeviceList returned 0 devices."
+        return
+    }
+
+    listBuf := Buffer(entrySize * count)
+    DllCall("GetRawInputDeviceList", "Ptr", listBuf, "UInt*", &count, "UInt", entrySize)
+
+    out := ""
+    loop count {
+        offset  := (A_Index - 1) * entrySize
+        handle  := NumGet(listBuf, offset,             "Ptr" )
+        devType := NumGet(listBuf, offset + A_PtrSize, "UInt")
+        if devType != 1  ; skip non-keyboards
+            continue
+
+        DllCall("GetRawInputDeviceInfo", "Ptr", handle, "UInt", 0x20000007,
+            "Ptr", 0, "UInt*", &nameLen := 0)
+        nameBuf := Buffer(nameLen * 2)
+        DllCall("GetRawInputDeviceInfo", "Ptr", handle, "UInt", 0x20000007,
+            "Ptr", nameBuf, "UInt*", &nameLen)
+        devName := StrGet(nameBuf, "UTF-16")
+
+        matched := InStr(devName, "VID_05A4&PID_9865") ? "  ← KENSINGTON" : ""
+        out .= "Handle: " handle "`nPath:   " devName matched "`n`n"
+    }
+
+    if !out
+        out := "(no keyboard entries found)"
+
+    dGui := Gui(, "Keyboard devices at startup")
+    dGui.Add("Edit", "r20 w700 ReadOnly", out)
+    dGui.Add("Button", "Default w100", "OK").OnEvent("Click", (*) => dGui.Destroy())
+    dGui.Show()
 }
 
 ; ─── Cleanup on exit ───────────────────────────────────────────────────────────
