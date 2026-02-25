@@ -10,9 +10,12 @@ global g_hookCB           := 0
 global g_msgWin           := Gui(, "KensingtonMacropad_Internal")
 
 ; ─── Entry point ───────────────────────────────────────────────────────────────
+Persistent()  ; AHK v2: no hotkeys defined, so we must opt-in to staying alive
 SetupRawInput()
 FindKensington()
 InstallHook()
+UpdateTrayTip()
+DebugDumpDevices()  ; one-time startup dump — remove once device is confirmed detected
 
 ; ─── Raw Input registration ────────────────────────────────────────────────────
 ; Registers for keyboard WM_INPUT messages delivered to g_msgWin even when
@@ -182,6 +185,11 @@ HandleRawInput(wParam, lParam, *) {
     if (flags & 1) || !IsNumpadVK(vKey)
         return
 
+    ; Debug: show which device sent the key and whether it matched
+    match := (devHandle = g_kensingtonHandle) ? "KENSINGTON" : "other kbd"
+    ToolTip "WM_INPUT VK=" vKey " | dev=" devHandle " | " match
+    SetTimer(() => ToolTip(), -2000)
+
     if devHandle = g_kensingtonHandle {
         ; Key came from the Kensington → run test macro
         RunMacro(vKey)
@@ -198,6 +206,7 @@ HandleDeviceChange(wParam, lParam, *) {
     if wParam = 0x8000 || wParam = 0x8004 {
         Sleep(500)  ; let Windows finish registering/unregistering the device
         FindKensington()
+        UpdateTrayTip()
     }
 }
 
@@ -264,6 +273,57 @@ RunMacro(vk) {
         case 110: Send "G"   ; .
         case 8:   Send "H"   ; Backspace
     }
+}
+
+; ─── Debug helpers (remove once working) ──────────────────────────────────────
+
+; Shows ARMED / DISARMED in the tray icon tooltip.
+UpdateTrayTip() {
+    global g_kensingtonHandle
+    if g_kensingtonHandle
+        A_IconTip := "Kensington Macropad — ARMED (handle=" g_kensingtonHandle ")"
+    else
+        A_IconTip := "Kensington Macropad — disarmed (device not found)"
+}
+
+; Dumps every keyboard's HID path at startup so we can verify the VID/PID string.
+; Shows a scrollable MsgBox — close it to continue; the script keeps running.
+DebugDumpDevices() {
+    entrySize := 8 + A_PtrSize
+    DllCall("GetRawInputDeviceList", "Ptr", 0, "UInt*", &count := 0, "UInt", entrySize)
+    if !count {
+        MsgBox "GetRawInputDeviceList returned 0 devices."
+        return
+    }
+
+    listBuf := Buffer(entrySize * count)
+    DllCall("GetRawInputDeviceList", "Ptr", listBuf, "UInt*", &count, "UInt", entrySize)
+
+    out := ""
+    loop count {
+        offset  := (A_Index - 1) * entrySize
+        handle  := NumGet(listBuf, offset,             "Ptr" )
+        devType := NumGet(listBuf, offset + A_PtrSize, "UInt")
+        if devType != 1  ; skip non-keyboards
+            continue
+
+        DllCall("GetRawInputDeviceInfo", "Ptr", handle, "UInt", 0x20000007,
+            "Ptr", 0, "UInt*", &nameLen := 0)
+        nameBuf := Buffer(nameLen * 2)
+        DllCall("GetRawInputDeviceInfo", "Ptr", handle, "UInt", 0x20000007,
+            "Ptr", nameBuf, "UInt*", &nameLen)
+        devName := StrGet(nameBuf, "UTF-16")
+
+        matched := InStr(devName, "VID_05A4&PID_9865") ? "  <<< KENSINGTON MATCH" : ""
+        out .= "Handle: " handle "`nPath:   " devName matched "`n`n"
+    }
+
+    if !out
+        out := "(no keyboard entries found)"
+
+    ; MsgBox is used here (not Gui) — it's blocking and has no object-lifetime issues.
+    ; A local Gui variable would be GC'd when the function returns, destroying the window.
+    MsgBox out, "Keyboard devices at startup", 0
 }
 
 ; ─── Cleanup on exit ───────────────────────────────────────────────────────────
