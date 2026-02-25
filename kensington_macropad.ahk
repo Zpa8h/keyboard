@@ -10,11 +10,12 @@ global g_hookCB           := 0
 global g_msgWin           := Gui(, "KensingtonMacropad_Internal")
 
 ; ─── Entry point ───────────────────────────────────────────────────────────────
+Persistent()  ; AHK v2: no hotkeys defined, so we must opt-in to staying alive
 SetupRawInput()
 FindKensington()
 InstallHook()
 UpdateTrayTip()
-DebugDumpDevices()  ; one-time startup dump — shows all keyboard paths in a MsgBox
+DebugDumpDevices()  ; one-time startup dump — remove once device is confirmed detected
 
 ; ─── Raw Input registration ────────────────────────────────────────────────────
 ; Registers for keyboard WM_INPUT messages delivered to g_msgWin even when
@@ -313,17 +314,16 @@ DebugDumpDevices() {
             "Ptr", nameBuf, "UInt*", &nameLen)
         devName := StrGet(nameBuf, "UTF-16")
 
-        matched := InStr(devName, "VID_05A4&PID_9865") ? "  ← KENSINGTON" : ""
+        matched := InStr(devName, "VID_05A4&PID_9865") ? "  <<< KENSINGTON MATCH" : ""
         out .= "Handle: " handle "`nPath:   " devName matched "`n`n"
     }
 
     if !out
         out := "(no keyboard entries found)"
 
-    dGui := Gui(, "Keyboard devices at startup")
-    dGui.Add("Edit", "r20 w700 ReadOnly", out)
-    dGui.Add("Button", "Default w100", "OK").OnEvent("Click", (*) => dGui.Destroy())
-    dGui.Show()
+    ; MsgBox is used here (not Gui) — it's blocking and has no object-lifetime issues.
+    ; A local Gui variable would be GC'd when the function returns, destroying the window.
+    MsgBox out, "Keyboard devices at startup", 0
 }
 
 ; ─── Cleanup on exit ───────────────────────────────────────────────────────────
